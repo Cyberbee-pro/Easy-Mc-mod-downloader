@@ -12,7 +12,6 @@ git commit -m "Feature deployment pass -prod"
 
 ```
 
-
 The pipeline sets compilation vectors, calculates the next chronological version tag (`v1.X`), creates a live Git tag, packages the executable inside an Arch Linux container, and posts a live production release page with the compiled Linux binary attached.
 * **Non-Production Pre-Release:** Append `-noprod` to the end of your commit message.
 ```bash
