@@ -2,7 +2,7 @@
 
 A command-line interface (CLI) utility written in Python designed to query the Modrinth API (Labrinth v2), resolve Minecraft mod configurations, and recursively download primary files along with all specified required dependencies. The project includes a pre-configured GitHub Actions automation pipeline optimized for compiling standalone Linux binaries via PyInstaller inside an Arch Linux container environment.
 
-![Full Banner](Images/Frame%4.svg)
+![Full Banner](Images/Frame_4.svg)
 
 ---
 
