@@ -101,7 +101,7 @@ jobs:
           
           echo "Final verified release target: $FINAL_TAG"
           echo "TAG_NAME=$FINAL_TAG" >> $GITHUB_OUTPUT
-          echo "RELEASE_NAME=Application V${FINAL_TAG#v}" >> $GITHUB_OUTPUT
+          echo "RELEASE_NAME=Easy Mod Downloader V${FINAL_TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Establish Isolated Python Virtual Environment
         run: |
