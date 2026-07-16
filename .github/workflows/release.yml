@@ -1,4 +1,4 @@
-name: Python Application Release Pipeline
+name: Python Multi-OS Release Pipeline
 
 on:
   push:
@@ -8,17 +8,15 @@ permissions:
   contents: write
 
 jobs:
-  route-and-compile:
+  release-prep:
+    name: Parse Versioning Flags
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
-
+    outputs:
+      should_release: ${{ steps.versioning.outputs.SHOULD_RELEASE }}
+      is_prerelease: ${{ steps.versioning.outputs.IS_PRERELEASE }}
+      tag_name: ${{ steps.versioning.outputs.TAG_NAME }}
+      release_name: ${{ steps.versioning.outputs.RELEASE_NAME }}
     steps:
-      - name: Initialize Arch Package Repositories
-        run: |
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm git python python-pip gcc binutils jq
-
       - name: Checkout Code Base
         uses: actions/checkout@v4
         with:
@@ -31,31 +29,22 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           
-          echo "Processing Commit Message safely via environment variables."
-
-          # Strict flag isolation tracking using word boundaries
           if [[ "$COMMIT_MSG" =~ -prod($|[[:space:]]) ]]; then
             echo "SHOULD_RELEASE=true" >> $GITHUB_OUTPUT
             echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
-            echo "Target Type: OFFICIAL PRODUCTION RELEASE"
           elif [[ "$COMMIT_MSG" =~ -noprod($|[[:space:]]) ]]; then
             echo "SHOULD_RELEASE=true" >> $GITHUB_OUTPUT
             echo "IS_PRERELEASE=true" >> $GITHUB_OUTPUT
-            echo "Target Type: NON-PRODUCTION PRE-RELEASE"
           else
             echo "SHOULD_RELEASE=false" >> $GITHUB_OUTPUT
-            echo "No release flags detected. Proceeding with compilation check only."
           fi
 
-          # Safe trailing version regex capture
           EXP_VERSION=$(echo "$COMMIT_MSG" | grep -oE -- '-[0-9]+$' | tr -d '-' || true)
-
           if [ ! -z "$EXP_VERSION" ]; then
             EXP_VERSION=$((10#$EXP_VERSION))
           fi
 
           LATEST_TAG=$(git tag -l "v*" 2>/dev/null | sort -V 2>/dev/null | tail -n 1 2>/dev/null || echo "")
-          
           if [ -z "$LATEST_TAG" ]; then
             BASE_MAJOR=1
             BASE_MINOR=0
@@ -64,7 +53,6 @@ jobs:
             HAS_TAGS=true
             VERSION_NUM=${LATEST_TAG#v}
             VERSION_NUM=$(echo "$VERSION_NUM" | cut -d- -f1)
-            
             if [[ "$VERSION_NUM" == *.* ]]; then
               BASE_MAJOR=$(echo "$VERSION_NUM" | cut -d. -f1)
               BASE_MINOR=$(echo "$VERSION_NUM" | cut -d. -f2)
@@ -74,7 +62,6 @@ jobs:
             fi
           fi
 
-          # Calculate target tag string
           if [ ! -z "$EXP_VERSION" ]; then
             TARGET_VERSION="$EXP_VERSION"
           else
@@ -86,73 +73,69 @@ jobs:
             fi
           fi
 
-          # Universal Collision Firewall Loop
           FINAL_TAG="v$TARGET_VERSION"
           COUNTER=1
           BASE_TARGET_VERSION="$TARGET_VERSION"
-
           while git rev-parse "$FINAL_TAG" >/dev/null 2>&1; do
-            echo "Tag $FINAL_TAG already exists! Appending dynamic increment offset..."
             FINAL_TAG="v${BASE_TARGET_VERSION}-build${{ github.run_number }}-$COUNTER"
             COUNTER=$((COUNTER + 1))
           done
           
-          echo "Final verified release target: $FINAL_TAG"
           echo "TAG_NAME=$FINAL_TAG" >> $GITHUB_OUTPUT
           echo "RELEASE_NAME=Easy Mod Downloader V${FINAL_TAG#v}" >> $GITHUB_OUTPUT
 
-      - name: Establish Isolated Python Virtual Environment
+  compile-and-deploy:
+    name: Compile on ${{ matrix.os }}
+    needs: release-prep
+    if: needs.release-prep.outputs.should_release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: mod_downloader_linux
+          - os: windows-latest
+            artifact_name: mod_downloader_windows.exe
+          - os: macos-latest
+            artifact_name: mod_downloader_macos
+
+    steps:
+      - name: Checkout Code Base
+        uses: actions/checkout@v4
+
+      - name: Set up Python Context
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Compiling Dependencies
         run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install pyinstaller requests
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
 
-      - name: Package Standalone Linux Executable via PyInstaller
-        id: binary_build
+      - name: Package Executable Binary
+        run: pyinstaller --onefile --clean mod_downloader.py
+
+      - name: Standardize Binary Name for Release
+        shell: bash
         run: |
-          source .venv/bin/activate
-          pyinstaller --onefile --clean mod_downloader.py
-          
-          if [ -f "dist/mod_downloader" ]; then
-            echo "Binary verification check passed."
-            echo "BINARY_PATH=dist/mod_downloader" >> $GITHUB_OUTPUT
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            mv dist/mod_downloader.exe dist/${{ matrix.artifact_name }}
           else
-            echo "Binary output missing compilation sequence error."
-            exit 1
+            mv dist/mod_downloader dist/${{ matrix.artifact_name }}
           fi
 
-      - name: Commit and Push Compiled Binary to Repository
-        run: |
-          mkdir -p "compiled executable"
-          cp dist/mod_downloader "compiled executable/mod_downloader" || true
-
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add "compiled executable/mod_downloader"
-          
-          if ! git diff --cached --quiet; then
-            git commit -m "//: Automated Binary Compile: Build Asset Update"
-            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-            git push origin HEAD:${{ github.ref_name }}
-          else
-            echo "No changes detected in binary layout bytes. Skipping commit sweep."
-          fi
-
-      - name: Deploy Dynamic Release Assets to Production
-        if: steps.versioning.outputs.SHOULD_RELEASE == 'true'
+      - name: Deploy Asset to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.binary_build.outputs.BINARY_PATH }}
-          name: "${{ steps.versioning.outputs.RELEASE_NAME }}"
-          tag_name: "${{ steps.versioning.outputs.TAG_NAME }}"
-          prerelease: ${{ steps.versioning.outputs.IS_PRERELEASE }}
+          files: dist/${{ matrix.artifact_name }}
+          name: "${{ needs.release-prep.outputs.release_name }}"
+          tag_name: "${{ needs.release-prep.outputs.tag_name }}"
+          prerelease: ${{ needs.release-prep.outputs.is_prerelease }}
           body: |
-            ## Automated Standalone Binary Production Build
-            This Linux executable container was dynamically generated and verified via automated PyInstaller packaging routines.
+            ## Automated Standalone Multi-OS Production Build
+            These cross-platform executable containers were dynamically generated and verified via automated PyInstaller packaging execution matrices.
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
